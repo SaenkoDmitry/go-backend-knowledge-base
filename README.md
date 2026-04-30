@@ -1,7 +1,7 @@
 # Оглавление
 - [[Go core]]
 - [[Database и PostgresSQL]]
-- [[Кэширование Redis и Memcached]]
+- [[Кэширование]]
 - [[Очереди сообщений Kafka]]
 - [[Web и HTTP]]
 - [[Операционные системы и Linux]]

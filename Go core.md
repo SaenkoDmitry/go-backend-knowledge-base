@@ -14,7 +14,7 @@
 - [[Go core#Memory|Memory]]
 - [[Go core#Memory leaks|Memory leaks]]
 - [[Go core#Profiling|Profiling]]
-- [[Go core#Задачи|Задачи]]
+- [[Go core#Классические задачи|Классические задачи]]
 - [[Go core#Вопросы|Вопросы]]
 
 ---
@@ -366,26 +366,53 @@ type hchan struct {
 
 ### как отвечать
 > **Map** — это хеш-таблица с бакетами.  
-> При росте происходит **incremental resize**.
-> 
+> При росте происходит **incremental resiz e**.
 > **Не потокобезопасна** → нужен mutex.
+### База
+> есть два основных метода борьбы с коллизиями в мапах: **метод цепочек** и **метод открытой адресации**.
+> в мапах в любом случае будут **коллизии**, потому что мы отображаем большое множество в малое.
 ### Важно:
 - iteration order random
 - concurrent write → panic
 ### Старая мапа
-- просто **хэш-таблица**, массив бакетов
+- просто **хэш-таблица**, массив бакетов, каждый бакет – таблица из 8 пар ключ-значение
+- используется **метод цепочек**
 - для значения вычисляется хэш с помощью **хэш-функции** и таким образом вычисляется номер бакета
 - важно понимать, что могут возникнуть **коллизии** - если хэш-функция вернула одинаковые значения для разных ключей
+**overflow bucket**
 - при коллизиях в бакете значения складываются в таблицу/массив и в конце нее есть ссылка на **overflow bucket** (таким образом, другой бакет может лежать вообще в другой области памяти, что будет замедлять обращение к нему)
-- если **load factor** превышен (среднее число элементов в бакете превышает 6.5), то происходит **рост мапы** за счет выделения новых бакетов и постепенная **эвакуация данных** из старой области памяти в новую - это происходит не сразу, а **при каждой вставке по кусочкам**
-### Новая мапа
-- это **swiss хэш-таблица с открытой адресацией**
-- от ключа строится хэш из **64 бит**, **57** и **7 бит** - это h1 и h2
-- **первый h1** используется для поиска группы для ключа среди всех групп
-- **второй h2** для представления ключа внутри группы + 1 бит - это **бит заполненности**
-- каждая группа это **16 байт**
-- если для элемента в группе нет места, то кладем в следующую (при поиске также)
-- фишка новой мапы в использовании особенностей новых процессоров, в которых есть **SIMD инструкции** (single instruction - multiple data)
+**эвакуация данных**
+- если **load factor** превышен (среднее число элементов в бакете превышает 6.5, а заполненность мапы >80%), то происходит **рост мапы** X2
+- эвакуация данных происходит не сразу, а инкрементально при каждой записи/удалении ключа
+**tophash **
+- помимо массива ключей и массива значений есть массив **tophash** (верхние 8 бит ключа) – это оптимизация для случаев, когда ключ очень большой (сравниваются сначала tophash-и, затем сами ключи)
+### Новая мапа (swiss table)
+> подробнее здесь – https://vkvideo.ru/video-139172865_456239348
+- проблемы старой мапы:
+	- **прыжки по памяти и промахи кэша** при сканировании цепочек
+	- **мапа после роста не освобождает память** под раздутые бакеты
+	- увеличение словаря приводит к **переиндексации всего**
+- используется **метод с открытой адресацией**
+**h1 и h2 части хэша ключа +SIMD операция** 
+- от ключа строится хэш из **64 бит**, **h1=57 бит** и **h2=7 бит**
+	- **первый h1** используется для поиска группы для ключа среди всех групп
+	- **второй h2** для выбора ключа внутри группы + 1 бит - это **бит заполненности**
+- вместо бакетов у нас группы, если для элемента в группе нет места, то кладем в следующую (при поиске также)
+- **группа** – 8 слотов по 8 бит
+**SIMD операции**
+- single instruction - multiple data
+- благодаря ним на уровне процессора можно за одну операцию найти слоты-кандидаты на искомый ключ – сравнение будет идти побайтово с 8 битами h2
+**рост swiss таблиц**
+- load factor = 7/8, то есть не менее 1/8 свободного слота в группе
+- сначала рост таблицы в 2 раза (x2  кол-во групп), перенос данных сразу
+- максимум 1024 слота (или 128 групп), далее переходим к концепции подтаблиц
+- при переполнении – сплит на 2 swiss таблицы
+**extendible hashing** – расширяемое хэширование
+- снижает накладные расходы при росте таблицы и минимизирует перераспределение элементов за счет постепенного расширения таблицы
+- идея в том, что когда данных много, то делаем много swiss таблиц вместо одной – все это называется директорией
+- директория состоит из 8 swiss tables -> 2^3 = 8 -> используем три бита для определения таблицы внутри директории, далее h1 и h2 для точного определения места ключа
+- важно понимать разницу global depth / local depth, что когда таблица делится на две, то local depth увеличивается и начинаем смотреть доп бит в ключе h1
+- global depth = max(local depth), количество ячеек в dir (окно в h1) равно степени двойки
 
 ---
 ## Errors
@@ -608,27 +635,30 @@ case "signal: terminated":
 ```
 
 ---
-## Задачи
-- worker pool https://go.dev/play/p/U-uJqmRDSBg [1](https://go.dev/play/p/xY9hb8vLIxm)
-- errgroup [on channels](https://go.dev/play/p/3_iGL3rfeOJ) [on contexts](https://go.dev/play/p/e8yBmkMhPed)
-- done channel https://go.dev/play/p/pXQ6vL6EiO9
-- done channel with struct https://go.dev/play/p/3yQA80hSZkd
-- rate limiter (trivial) https://go.dev/play/p/bACNFUqDmgZ [one more impl](https://go.dev/play/p/UvGTTz7eq3N)
-- rate limiter (leacky bucket) https://go.dev/play/p/o4sGrsuFH6R
-- cancel long task (with ticker) https://go.dev/play/p/KFwwWQ-b1j8
-- cancel long task (with context) https://go.dev/play/p/00nlS9_qSR5
-- graceful shutdown https://go.dev/play/p/xDFByyfTrCq
-- fan-out https://go.dev/play/p/TusXlwHRc_A
-- fan-in https://go.dev/play/p/1vrNadKG4V9
-- generator https://go.dev/play/p/NO1zlrn3UPV
-- or done channel https://go.dev/play/p/Y-CMYp-0LwK
-- semaphore https://go.dev/play/p/QnOFkwzjPiX
-- single flight [impl 1](https://go.dev/play/p/v6ulYnBdzNX) [impl 2](https://go.dev/play/p/e4BCvWFr9Br)
-- max elem https://go.dev/play/p/meVYIxil_ZM
-- sum 1000 [impl 1](https://go.dev/play/p/_ypb58y2Uwh) [impl 2](https://go.dev/play/p/rXcBAOYDOQ2)
-- swap two numbers [impl 1](https://go.dev/play/p/LtpHp7WwEOW) [impl 2](https://go.dev/play/p/qzKBgI92mNP)
-- crawler [interview version](https://go.dev/play/p/LHYYWrcXsG0) [true solution](https://go.dev/play/p/tJCH_4iNFjH)
-- pub/sub https://go.dev/play/p/bLVlmnvZKjm
+## Классические задачи
+- [ ] worker pool https://go.dev/play/p/U-uJqmRDSBg [1](https://go.dev/play/p/xY9hb8vLIxm)
+- [ ] errgroup [on channels](https://go.dev/play/p/3_iGL3rfeOJ) [on contexts](https://go.dev/play/p/e8yBmkMhPed)
+- [ ] done channel https://go.dev/play/p/pXQ6vL6EiO9 https://go.dev/play/p/u3kc2PkLiAM
+- [ ] done channel with struct https://go.dev/play/p/3yQA80hSZkd https://go.dev/play/p/aj-twVAv-54
+- [ ] done channel with ticker https://go.dev/play/p/3yQA80hSZkd
+- [ ] rate limiter (trivial) https://go.dev/play/p/bACNFUqDmgZ [one more impl](https://go.dev/play/p/UvGTTz7eq3N) https://go.dev/play/p/iID3GmKFKSO
+- [ ] rate limiter (leacky bucket) https://go.dev/play/p/o4sGrsuFH6R https://go.dev/play/p/4rknQ-fMemr
+- [ ] cancel long task (with ticker) https://go.dev/play/p/KFwwWQ-b1j8
+- [ ] cancel long task (with context) https://go.dev/play/p/00nlS9_qSR5 https://go.dev/play/p/DyJIehLnXRo
+- [ ] graceful shutdown https://go.dev/play/p/xDFByyfTrCq https://go.dev/play/p/tnYeHO_wDij
+- [ ] fan-out https://go.dev/play/p/TusXlwHRc_A https://go.dev/play/p/sOSLwN4URSd
+- [ ] fan-in https://go.dev/play/p/1vrNadKG4V9 https://go.dev/play/p/pjyghrF4YKW
+- [ ] generator https://go.dev/play/p/NO1zlrn3UPV https://go.dev/play/p/fM88dhLhmjL
+- [ ] or done channel https://go.dev/play/p/Y-CMYp-0LwK
+- [ ] semaphore https://go.dev/play/p/QnOFkwzjPiX https://go.dev/play/p/s-gudHTpDhI
+- [ ] single flight [impl 1](https://go.dev/play/p/v6ulYnBdzNX) [impl 2](https://go.dev/play/p/e4BCvWFr9Br)
+- [ ] max elem https://go.dev/play/p/meVYIxil_ZM
+- [ ] sum 1000 [impl 1](https://go.dev/play/p/_ypb58y2Uwh) [impl 2](https://go.dev/play/p/rXcBAOYDOQ2)
+- [ ] swap two numbers [impl 1](https://go.dev/play/p/LtpHp7WwEOW) [impl 2](https://go.dev/play/p/qzKBgI92mNP)
+- [ ] crawler [interview version](https://go.dev/play/p/LHYYWrcXsG0) [true solution](https://go.dev/play/p/tJCH_4iNFjH) [interview version (not working)](https://go.dev/play/p/LHYYWrcXsG0) [true solution (bad)](https://go.dev/play/p/tJCH_4iNFjH)
+- [ ] pub/sub https://go.dev/play/p/bLVlmnvZKjm
+
+
 
 ---
 ## Вопросы
