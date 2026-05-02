@@ -456,7 +456,6 @@ type hchan struct {
 ## Graceful Shutdown
 
 > [Graceful Shutdown в Go на практике](https://habr.com/ru/articles/908344/)
-
 ### Нужно:
 > - остановить приём трафика
 > - завершить текущие задачи
@@ -465,25 +464,31 @@ type hchan struct {
 По умолчанию рантайм Go завершает приложение при получении сигналов `SIGTERM` , `SIGINT` или `SIGHUP`.
 ```go
 func main() {
-  signalChan := make(chan os.Signal, 1)
-  signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	srv := &http.Server{Addr: ":8080"}  
+  
+	go func() {  
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {  
+			log.Fatalf("listen: %s\n", err)  
+		}  
+	}()  
+	  
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-  // Setup work here
-  <-signalChan
-
-  fmt.Println("Received termination signal, shutting down...")
+	// ждем сигнала от ОС / kubernetes о том, что нужно завершать работу
+	<-ctx.Done()
+	
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)  
+	defer cancel()  
+	  
+	// shutdown даёт завершиться активным HTTP-запросам
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Println("shutdown error:", err)  
+	}  
+	  
+	// теперь уже закрываем DB, останавливаем воркеры, чистим другие ресурсы
+	db.Close()
 }
-```
-`signal.Notify` указывает рантайм Go передавать сигналы в канал, вместо поведения по-умолчанию. При помощи этого мы обрабатываем сигналы самостоятельно и наше приложение не завершается автоматически.
-
-С Go 1.16 можно сделать немного проще с `signal.NotifyContext` , который связывает обработку сигнала и контекст отмены:
-```go
-ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-defer stop()
-
-// Setup tasks here
-
-<-ctx.Done()
 ```
 Важно знать сколько времени есть у приложения на завершение после получения сигнала. К примеру в Kubernetes **по-умолчанию это 30 секунд**, который можно переопределить в поле `terminationGracePeriodSeconds`
 
